@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: unigpt-latex-compiler
+    runtime: docker
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: API_KEY
+        generateValue: true
+      - key: MAX_SOURCE_BYTES
+        value: "1000000"
+      - key: COMPILE_TIMEOUT
+        value: "120"
+      - key: FILE_TTL_SECONDS
+        value: "86400"
