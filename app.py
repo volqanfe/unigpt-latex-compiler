@@ -14,13 +14,14 @@ from pypdf import PdfReader
 APP_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = APP_DIR / "generated"
 OUTPUT_DIR.mkdir(exist_ok=True)
+TECTONIC = APP_DIR / ".bin" / "tectonic"
 
 API_KEY = os.environ.get("API_KEY", "")
 MAX_SOURCE_BYTES = int(os.environ.get("MAX_SOURCE_BYTES", "1000000"))
 COMPILE_TIMEOUT = int(os.environ.get("COMPILE_TIMEOUT", "120"))
 FILE_TTL_SECONDS = int(os.environ.get("FILE_TTL_SECONDS", "86400"))
 
-app = FastAPI(title="UniGPT Free LaTeX Compiler", version="1.0.0")
+app = FastAPI(title="UniGPT Free LaTeX Compiler", version="1.1.0")
 
 
 class CompileRequest(BaseModel):
@@ -62,7 +63,11 @@ def safe_basename(name: str) -> str:
 
 @app.get("/health")
 def health():
-    return {"ok": True, "latexmk": shutil.which("latexmk") is not None}
+    return {
+        "ok": True,
+        "engine": "tectonic",
+        "tectonic": TECTONIC.exists() and os.access(TECTONIC, os.X_OK),
+    }
 
 
 @app.post("/compile", response_model=CompileResponse)
@@ -73,6 +78,9 @@ def compile_latex(
 ):
     require_key(x_api_key)
     cleanup_old_files()
+
+    if not TECTONIC.exists():
+        raise HTTPException(status_code=500, detail="Tectonic compiler is not installed")
 
     source_bytes = payload.source.encode("utf-8")
     if len(source_bytes) > MAX_SOURCE_BYTES:
@@ -87,12 +95,11 @@ def compile_latex(
         tex_path.write_text(payload.source, encoding="utf-8")
 
         cmd = [
-            "latexmk",
-            "-pdf",
-            "-interaction=nonstopmode",
-            "-halt-on-error",
-            "-file-line-error",
-            "-no-shell-escape",
+            str(TECTONIC),
+            "--untrusted",
+            "--keep-logs",
+            "--outdir",
+            str(workdir),
             tex_path.name,
         ]
 
@@ -103,7 +110,7 @@ def compile_latex(
                 capture_output=True,
                 text=True,
                 timeout=COMPILE_TIMEOUT,
-                env={**os.environ, "openout_any": "p", "openin_any": "a"},
+                env={**os.environ, "HOME": str(APP_DIR)},
             )
         except subprocess.TimeoutExpired as exc:
             log = ((exc.stdout or "") + "\n" + (exc.stderr or ""))[-20000:]
