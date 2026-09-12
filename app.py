@@ -1,3 +1,4 @@
+import logging
 import os
 import shutil
 import subprocess
@@ -21,7 +22,10 @@ MAX_SOURCE_BYTES = int(os.environ.get("MAX_SOURCE_BYTES", "1000000"))
 COMPILE_TIMEOUT = int(os.environ.get("COMPILE_TIMEOUT", "120"))
 FILE_TTL_SECONDS = int(os.environ.get("FILE_TTL_SECONDS", "86400"))
 
-app = FastAPI(title="UniGPT Free LaTeX Compiler", version="1.1.0")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("unigpt-latex-compiler")
+
+app = FastAPI(title="UniGPT Free LaTeX Compiler", version="1.2.0")
 
 
 class CompileRequest(BaseModel):
@@ -59,6 +63,62 @@ def cleanup_old_files():
 def safe_basename(name: str) -> str:
     cleaned = "".join(ch for ch in name if ch.isalnum() or ch in ("-", "_"))[:80]
     return cleaned or "document"
+
+
+def run_startup_selftest() -> None:
+    """Compile one tiny document on each deploy to verify the real TeX pipeline."""
+    if not (TECTONIC.exists() and os.access(TECTONIC, os.X_OK)):
+        logger.error("LATEX_SELFTEST_FAILED: tectonic binary missing or not executable")
+        return
+
+    source = r"""\documentclass{article}
+\usepackage{amsmath}
+\begin{document}
+Hello Volkan.
+\[
+e^{i\pi}+1=0
+\]
+\end{document}
+"""
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="latex_selftest_") as tmp:
+            workdir = Path(tmp)
+            tex_path = workdir / "selftest.tex"
+            tex_path.write_text(source, encoding="utf-8")
+            proc = subprocess.run(
+                [
+                    str(TECTONIC),
+                    "--untrusted",
+                    "--keep-logs",
+                    "--outdir",
+                    str(workdir),
+                    tex_path.name,
+                ],
+                cwd=workdir,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                env={**os.environ, "HOME": str(APP_DIR)},
+            )
+            pdf_path = workdir / "selftest.pdf"
+            if proc.returncode == 0 and pdf_path.exists() and pdf_path.stat().st_size > 0:
+                pages = len(PdfReader(str(pdf_path)).pages)
+                logger.info(
+                    "LATEX_SELFTEST_OK: pages=%s bytes=%s",
+                    pages,
+                    pdf_path.stat().st_size,
+                )
+            else:
+                tail = (proc.stdout + "\n" + proc.stderr)[-4000:]
+                logger.error("LATEX_SELFTEST_FAILED: %s", tail)
+    except Exception as exc:
+        logger.exception("LATEX_SELFTEST_FAILED: %s", exc)
+
+
+@app.on_event("startup")
+def startup_selftest() -> None:
+    run_startup_selftest()
 
 
 @app.get("/health")
